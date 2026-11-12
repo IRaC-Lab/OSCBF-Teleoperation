@@ -21,8 +21,8 @@ def generate_launch_description():
             ),
             Node(
                 package="oscbf_control",
-                executable="oculus_node.py",
-                name="oculus_node",
+                executable="traj_node.py",
+                name="ee_traj_node",
                 output="screen",
                 emulate_tty=True,
             ),

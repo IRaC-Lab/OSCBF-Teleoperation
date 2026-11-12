@@ -19,7 +19,7 @@ source "$VENV_DIR/bin/activate"
 PYTHON_EXECUTABLE=$(which python3)
 echo "Using Python: $PYTHON_EXECUTABLE"
 
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 
 colcon build --symlink-install \
     --cmake-args -DPYTHON_EXECUTABLE=$PYTHON_EXECUTABLE

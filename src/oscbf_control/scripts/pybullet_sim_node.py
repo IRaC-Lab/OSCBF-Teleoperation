@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Test the OSCBF ROS2 communication with pybullet
 
-This will mimic the franka c++ communication node which listens to joint torques
-and publishes joint states
+This mimics the franka c++ communication node:
+- listens to joint torques
+- applies torques to pybullet
+- publishes joint states
+
+Features:
+- three static sphere obstacles generated inside this node
+- collision detection only (penetration only)
 """
 
 import numpy as np
 import pybullet
-from pybullet_utils.bullet_client import BulletClient
 
 import rclpy
 from rclpy.node import Node
@@ -17,24 +22,33 @@ from rclpy.qos import (
     HistoryPolicy,
     DurabilityPolicy,
 )
-from geometry_msgs.msg import Point, Quaternion, Vector3
 from std_msgs.msg import Float64MultiArray
 from sensor_msgs.msg import JointState
-from oscbf_control_msgs.msg import EEState
 
-from oscbf_control.utils.rotations_and_transforms import xyzw_to_rotation_numpy
-from oscbf.core.manipulator import Manipulator, load_panda
-from oscbf.core.oscbf_configs import OSCBFTorqueConfig
-from oscbf.core.controllers import PoseTaskTorqueController
 from oscbf.core.manipulation_env import FrankaTorqueControlEnv
 
 
 class PybulletNode(Node):
     def __init__(self):
-        super().__init__("pybullet_node")
+        super().__init__("sim_node")
 
         self.freq = 1000
         self.env = FrankaTorqueControlEnv(timestep=1 / self.freq)
+
+        self.obstacle_center = np.array([0.25, 0.30, 0.50], dtype=float)
+        self.obstacle_amp_y = 0.1
+        self.obstacle_positions = np.vstack(
+            [
+                self.obstacle_center + np.array([0.0, -self.obstacle_amp_y, 0.0]),
+                self.obstacle_center,
+                self.obstacle_center + np.array([0.0, self.obstacle_amp_y, 0.0]),
+            ]
+        )
+        self.obstacle_radius = 0.15
+        self.obstacle_rgba = [0.45, 0.75, 0.95, 0.85]
+        self.obstacle_body_ids = []
+
+        self.in_collision = False
 
         qos_profile = QoSProfile(
             depth=10,
@@ -50,22 +64,85 @@ class PybulletNode(Node):
             qos_profile,
         )
 
-        self._last_z = None
-
         self.joint_state_pub = self.create_publisher(
             JointState, "franka/joint_states", qos_profile
         )
 
+        self._last_z = None
+
+        self._spawn_obstacles()
         self.timer = self.create_timer(1 / self.freq, self.publish_joint_states)
+
+        self.get_logger().info("PyBullet node initialized.")
+        self.get_logger().info(
+            f"Static sphere obstacles created at y={self.obstacle_positions[:, 1].round(3).tolist()}, "
+            f"radius={self.obstacle_radius:.3f} m"
+        )
+
+    def _spawn_obstacles(self):
+        visual_shape_id = self.env.client.createVisualShape(
+            shapeType=pybullet.GEOM_SPHERE,
+            radius=float(self.obstacle_radius),
+            rgbaColor=self.obstacle_rgba,
+        )
+
+        collision_shape_id = self.env.client.createCollisionShape(
+            shapeType=pybullet.GEOM_SPHERE,
+            radius=float(self.obstacle_radius),
+        )
+
+        for obstacle_position in self.obstacle_positions:
+            obstacle_body_id = self.env.client.createMultiBody(
+                baseMass=0.0,
+                baseCollisionShapeIndex=collision_shape_id,
+                baseVisualShapeIndex=visual_shape_id,
+                basePosition=obstacle_position.tolist(),
+                baseOrientation=[0.0, 0.0, 0.0, 1.0],
+            )
+            self.obstacle_body_ids.append(obstacle_body_id)
+
+    def get_contacts(self):
+        contacts = []
+        for obstacle_body_id in self.obstacle_body_ids:
+            contacts.extend(
+                self.env.client.getContactPoints(
+                    bodyA=self.env.robot,
+                    bodyB=obstacle_body_id,
+                )
+            )
+        return contacts
+
+    def get_penetrating_contacts(self):
+        contacts = self.get_contacts()
+        return [c for c in contacts if c[8] < 0.0]
+
+    def check_collision(self) -> bool:
+        return len(self.get_penetrating_contacts()) > 0
+
+    def log_collision_once(self):
+        penetrating_contacts = self.get_penetrating_contacts()
+        collided = len(penetrating_contacts) > 0
+
+        if collided and not self.in_collision:
+            self.get_logger().warn("Collision detected between robot and obstacle.")
+            self.get_logger().warn(
+                f"Penetrating contacts: {len(penetrating_contacts)}"
+            )
+
+            for c in penetrating_contacts[:5]:
+                self.get_logger().warn(
+                    f"linkA={c[3]}, linkB={c[4]}, contactDistance={c[8]:.6f}, normalForce={c[9]:.6f}"
+                )
+
+        self.in_collision = collided
 
     def torque_callback(self, msg):
         if self._last_z is None:
             self.get_logger().warn("No joint state received yet.")
             return
-        # Convert the Float64MultiArray message to a numpy array
-        joint_torques = np.array(msg.data)
 
-        # Need to add back gravity compensation
+        joint_torques = np.array(msg.data, dtype=float)
+
         zero_velocities = [0.0] * self.env.num_joints
         zero_accelerations = [0.0] * self.env.num_joints
         gravity_torques = self.env.client.calculateInverseDynamics(
@@ -74,20 +151,18 @@ class PybulletNode(Node):
             zero_velocities,
             zero_accelerations,
         )
-        joint_torques += gravity_torques
+        joint_torques += np.asarray(gravity_torques)
 
-        # Apply the joint torques to the robot in the simulation
         self.env.apply_control(joint_torques)
-
-        # Step sim
         self.env.step()
 
     def publish_joint_states(self):
+        self.log_collision_once()
+
         z = self.env.get_joint_state()
+
         joint_state_msg = JointState()
         joint_state_msg.header.stamp = self.get_clock().now().to_msg()
-        # names = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"]
-        # joint_state_msg.name = names
         joint_state_msg.position = z[: self.env.num_joints].tolist()
         joint_state_msg.velocity = z[self.env.num_joints :].tolist()
         self.joint_state_pub.publish(joint_state_msg)
@@ -98,9 +173,13 @@ class PybulletNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = PybulletNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
