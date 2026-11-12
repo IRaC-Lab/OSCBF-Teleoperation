@@ -88,10 +88,10 @@ This contains two packages:
 1. `oscbf_control`: Control nodes (Python and C++)
 3. `oscbf_control_msgs`: Custom ROS2 message definitions
 
-## OMX teleoperation 연결 이후 실행법
+## Running after connecting OMX teleoperation
 
-OMX teleoperation을 먼저 연결한 뒤, 아래 세 노드를 각각 별도의 터미널에서 순서대로 실행합니다.
-OMX가 leader, Franka가 follower이며, 각 터미널에서 workspace 환경을 설정해야 합니다.
+After connecting OMX teleoperation, start the following three nodes in order, each in a separate terminal.
+OMX acts as the leader and Franka as the follower. Configure the workspace environment in each terminal as shown below.
 
 **Terminal 1 (Franka node)**: Publishes joint states, subscribes to joint torques
 ```
@@ -107,7 +107,7 @@ source scripts/setup.sh
 ros2 run oscbf_control franka_control_node.py
 ```
 
-**Terminal 3 (OMX leader-following node)**: OMX의 end-effector TF를 읽어 Franka의 목표 pose와 twist를 publish합니다.
+**Terminal 3 (OMX leader-following node)**: Reads the OMX end-effector TF and publishes the desired pose and twist for Franka.
 ```
 cd oscbf_hardware_ws
 source scripts/setup.sh
@@ -118,7 +118,7 @@ ros2 run oscbf_control traj_node.py
 
 #### Oculus teleoperation
 
-OMX 대신 Oculus를 사용하는 경우 Terminal 3을 아래 노드로 대체합니다.
+To use Oculus instead of OMX, replace Terminal 3 with the following node.
 ```
 cd oscbf_hardware_ws
 source scripts/setup.sh
